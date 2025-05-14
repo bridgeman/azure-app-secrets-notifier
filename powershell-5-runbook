@@ -1,0 +1,77 @@
+# Create App Registration in Entra ID
+# Grant the App the following permissions Application.Read.All (With Admin Consent)
+# Once permissions assigned under the 'Certificates & secrets' create a 'Client secret'
+# Use the values in the variables below, there are FIVE lines to customize on Lines: 13,14,15,60,61
+
+param(
+    [int]$DaysToExpire = 30
+)
+
+Import-Module Microsoft.Graph.Authentication
+Import-Module Microsoft.Graph.Applications
+
+$TenantId = "###INSERT TENANT ID ###"
+$ClientId = "###INSERT APP REGISTRATION CLIENT ID ###"
+$ClientSecret = "###INSERT APP REGISTRATION SECRET###"
+
+# Authenticate directly with Graph (supported & working)
+$SecureClientSecret = ConvertTo-SecureString $ClientSecret -AsPlainText -Force
+$Credential = New-Object System.Management.Automation.PSCredential($ClientId, $SecureClientSecret)
+
+Connect-MgGraph -TenantId $TenantId -ClientSecretCredential $Credential
+
+# Select-MgProfile -Name "v1.0"
+
+# Continue your logic here...
+$ExpiryDate = (Get-Date).AddDays($DaysToExpire)
+$Apps = Get-MgApplication -All
+
+$ExpiringCredentials = @()
+
+foreach ($App in $Apps) {
+    foreach ($Secret in $App.PasswordCredentials) {
+        if ($Secret.EndDateTime -le $ExpiryDate) {
+            $ExpiringCredentials += [PSCustomObject]@{
+                AppName    = $App.DisplayName
+                AppId      = $App.AppId
+                Type       = "Client Secret"
+                ExpiryDate = $Secret.EndDateTime
+            }
+        }
+    }
+    foreach ($Cert in $App.KeyCredentials) {
+        if ($Cert.EndDateTime -le $ExpiryDate) {
+            $ExpiringCredentials += [PSCustomObject]@{
+                AppName    = $App.DisplayName
+                AppId      = $App.AppId
+                Type       = "Certificate"
+                ExpiryDate = $Cert.EndDateTime
+            }
+        }
+    }
+}
+
+Disconnect-MgGraph
+
+# SMTP Notification logic
+if ($ExpiringCredentials.Count -gt 0) {
+    $SMTPServer = "smtp.office365.com"
+    $SMTPPort = 587
+    $From = "###INSERT FROM EMAIL ADDRESS###"
+    $To = "###INSERT TO EMAIL ADDRESS###"
+    $Subject = "Azure AD Apps with Credentials Expiring Soon"
+
+    $Body = $ExpiringCredentials | ConvertTo-Html -Property AppName, AppId, Type, ExpiryDate -Fragment | Out-String
+
+    $SMTPCredential = Get-AutomationPSCredential -Name "SMTP-Credentials"
+
+    Send-MailMessage -From $From -To $To `
+                     -Subject $Subject -Body $Body -BodyAsHtml `
+                     -SmtpServer $SMTPServer -Port $SMTPPort `
+                     -Credential $SMTPCredential -UseSsl
+
+    Write-Output "Notification sent."
+}
+else {
+    Write-Output "No expiring credentials found."
+}
